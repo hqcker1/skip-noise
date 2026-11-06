@@ -48,7 +48,9 @@ svg { flex:none; vertical-align:middle; }
 .placeholder-mark {border:1px solid #57343e;background:#442933;border-radius:19px;display:grid;place-items:center;width:63px;height:63px;color:#ff8e94;}
 .player-placeholder strong {font-size:15px;letter-spacing:-.25px;}
 .player-placeholder small {font-size:12px;line-height:1.5;color:#8d94aa;max-width:230px;}
-.player-overlay {position:absolute;inset:8px 8px auto auto;z-index:5;pointer-events:none;}
+.player-overlay {position:absolute;inset:8px 8px auto auto;z-index:5;pointer-events:none;transition:opacity .22s ease,transform .22s ease,visibility .22s ease;}
+/* The transparent tap layer is enabled only after fullscreen controls fade away. */
+.fullscreen-reveal {position:absolute;inset:0;width:100%;height:100%;background:transparent;border:0;padding:0;z-index:90;cursor:default;touch-action:manipulation;}
 .fullscreen-button {display:flex;align-items:center;gap:6px;background:#13141ddd;color:#fff;border:1px solid #ffffff44;backdrop-filter:blur(8px);font-size:11px;font-weight:750;padding:9px 11px;border-radius:9px;pointer-events:auto;}
 .video-bar {position:relative;height:8px;background:#303445;overflow:hidden;}
 .video-bar-track {position:absolute;inset:0;background:#34394b;}
@@ -122,9 +124,12 @@ svg { flex:none; vertical-align:middle; }
 .player-shell:fullscreen .player-overlay,.player-shell.pseudo-fullscreen .player-overlay {right:max(14px,env(safe-area-inset-right));top:max(16px,env(safe-area-inset-top));bottom:auto;}
 .player-shell .player-frame {position:relative;}
 .player-shell.is-fullscreen .player-frame,.player-shell.pseudo-fullscreen .player-frame,.player-shell:fullscreen .player-frame {position:absolute;left:50%;top:50%;width:min(100dvw,177.77778dvh);height:auto;aspect-ratio:16 / 9;transform:translate(-50%,-50%);}
-.player-shell.fs-landscape.is-fullscreen .player-frame,.player-shell.fs-landscape.pseudo-fullscreen .player-frame,.player-shell.fs-landscape:fullscreen .player-frame {width:max(100dvw,177.77778dvh);height:auto;aspect-ratio:16 / 9;}
-.player-shell.fs-rotated.is-fullscreen .player-frame,.player-shell.fs-rotated.pseudo-fullscreen .player-frame,.player-shell.fs-rotated:fullscreen .player-frame {width:max(100dvh,177.77778dvw);height:auto;aspect-ratio:16 / 9;transform:translate(-50%,-50%) rotate(90deg);}
+/* Contain in landscape too: show the complete image, never crop its edges. */
+.player-shell.fs-landscape.is-fullscreen .player-frame,.player-shell.fs-landscape.pseudo-fullscreen .player-frame,.player-shell.fs-landscape:fullscreen .player-frame {width:min(100dvw,177.77778dvh);height:auto;aspect-ratio:16 / 9;}
+.player-shell.fs-rotated.is-fullscreen .player-frame,.player-shell.fs-rotated.pseudo-fullscreen .player-frame,.player-shell.fs-rotated:fullscreen .player-frame {width:min(100dvh,177.77778dvw);height:auto;aspect-ratio:16 / 9;transform:translate(-50%,-50%) rotate(90deg);}
 .player-shell:fullscreen .player-overlay,.player-shell.is-fullscreen .player-overlay,.player-shell.pseudo-fullscreen .player-overlay {z-index:99;}
+.player-shell.fs-ui-hidden .player-overlay {opacity:0;visibility:hidden;transform:translateY(-8px);pointer-events:none;}
+.player-shell.fs-ui-hidden .fullscreen-button {pointer-events:none;}
 body.pseudo-lock {overflow:hidden !important;}
 @media(max-width:360px) { .mobile-app{padding-left:12px;padding-right:12px} .orientation-choices button{padding:8px 7px;font-size:10px;} .orientation-label{font-size:10px;} .thumb{width:91px;height:57px;} }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{transition:none!important;scroll-behavior:auto!important}}
@@ -154,6 +159,7 @@ body.pseudo-lock {overflow:hidden !important;}
   <div class="player-shell" id="playerShell">
     <div class="player-frame" id="playerFrame"><div id="ytPlayer" style="height:100%;width:100%"></div></div>
     <div class="player-placeholder" id="playerPlaceholder"><div class="placeholder-mark"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5 20 12 7 19.5z"/></svg></div><strong>Your next video starts here</strong><small>Paste a YouTube link above to watch with automatic sponsor skipping.</small></div>
+    <button class="fullscreen-reveal" id="fullscreenReveal" type="button" aria-label="Show fullscreen controls" hidden></button>
     <div class="player-overlay"><button class="fullscreen-button" id="fullscreenBtn" type="button" aria-label="Enter fullscreen" hidden disabled><svg id="fullscreenIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg><span id="fullscreenLabel">Fullscreen</span></button></div>
   </div>
   <div class="video-bar" aria-label="SponsorBlock segment timeline"><div class="video-bar-track" id="segmentTrack"></div><div class="played-progress" id="playedProgress" style="width:0%"></div></div>
@@ -220,6 +226,7 @@ body.pseudo-lock {overflow:hidden !important;}
   let requestController = null, lookupNonce = 0, seenSegments = new Set();
   let skipCounter = 0, savedSeconds = 0, duration = 0, lastDurationUpdate = 0;
   let fullscreenMode = 'portrait', fsBusy = false, pseudoFullscreen = false;
+  let fullscreenControlsTimer = 0, wasFullscreen = false;
   let timer = 0, scriptRequested = false;
   const shell = $('playerShell');
   const fmtTime = seconds => {seconds=Math.max(0, Math.floor(Number(seconds)||0));const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`;};
@@ -498,12 +505,33 @@ body.pseudo-lock {overflow:hidden !important;}
     if(isFullscreen())updateOrientation();
   }
   function isFullscreen(){return document.fullscreenElement===shell||pseudoFullscreen;}
+  function hideFullscreenControls(){
+    if(!isFullscreen())return;
+    shell.classList.add('fs-ui-hidden');
+    $('fullscreenReveal').hidden=false;
+  }
+  function showFullscreenControls(){
+    if(!isFullscreen())return;
+    clearTimeout(fullscreenControlsTimer);
+    shell.classList.remove('fs-ui-hidden');
+    $('fullscreenReveal').hidden=true;
+    fullscreenControlsTimer=setTimeout(hideFullscreenControls,3200);
+  }
   function applyFsClasses(){
     const active=isFullscreen();
     shell.classList.toggle('is-fullscreen',active&&!pseudoFullscreen);
     shell.classList.toggle('pseudo-fullscreen',pseudoFullscreen);
     $('fullscreenLabel').textContent=active?'Exit fullscreen':'Fullscreen';
     $('fullscreenBtn').setAttribute('aria-label',active?'Exit fullscreen':'Enter fullscreen');
+    if(active!==wasFullscreen){
+      wasFullscreen=active;
+      if(active)showFullscreenControls();
+      else{
+        clearTimeout(fullscreenControlsTimer);
+        shell.classList.remove('fs-ui-hidden');
+        $('fullscreenReveal').hidden=true;
+      }
+    }
     if(!active){shell.classList.remove('fs-rotated','fs-landscape');document.body.classList.remove('pseudo-lock');}
   }
   async function updateOrientation(){
@@ -520,7 +548,7 @@ body.pseudo-lock {overflow:hidden !important;}
     // only if the real screen is in portrait orientation.
     const screenPortrait=window.innerHeight>=window.innerWidth;
     shell.classList.toggle('fs-rotated',landscape&&screenPortrait&&!locked);
-    // Portrait mode intentionally contains/letterboxes the 16:9 video.
+    // Both modes contain/letterbox the complete image: zoom-to-fit, not cover.
   }
   async function toggleFullscreen(){
     if(fsBusy||!activeID)return;fsBusy=true;
@@ -558,6 +586,12 @@ body.pseudo-lock {overflow:hidden !important;}
   $('portraitMode').addEventListener('click',()=>setMode('portrait'));
   $('landscapeMode').addEventListener('click',()=>setMode('landscape'));
   $('fullscreenBtn').addEventListener('click',toggleFullscreen);
+  // First tap after the controls fade reveals Exit fullscreen. The overlay then
+  // becomes transparent to touches so YouTube's own controls remain usable.
+  $('fullscreenReveal').addEventListener('click',showFullscreenControls);
+  shell.addEventListener('pointerdown', e=>{
+    if(isFullscreen() && !shell.classList.contains('fs-ui-hidden') && e.target!==$('fullscreenBtn')) showFullscreenControls();
+  });
   $('clearHistory').addEventListener('click',()=>{historyEntries=[];historyStore();renderHistory();});
   document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement && screen.orientation?.unlock){try{screen.orientation.unlock();}catch{}}applyFsClasses();if(isFullscreen())updateOrientation();});
   window.addEventListener('resize',()=>{if(isFullscreen())updateOrientation();});
